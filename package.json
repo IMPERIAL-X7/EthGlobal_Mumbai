@@ -15,7 +15,9 @@
     "merchant": "tsx apps/merchant/src/index.ts",
     "legacy": "tsx apps/legacy-sim/src/index.ts",
     "setup:hedera": "tsx scripts/setup-hedera.ts",
-    "dev:fake": "LEASH_FAKE_CHAINS=1 tsx watch apps/server/src/index.ts"
+    "dev:fake": "LEASH_FAKE_CHAINS=1 tsx watch apps/server/src/index.ts",
+    "agent": "tsx apps/agent/src/index.ts",
+    "rehearse": "tsx scripts/demo-rehearsal.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

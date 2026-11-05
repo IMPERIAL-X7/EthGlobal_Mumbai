@@ -1,0 +1,13 @@
+{
+  "name": "@leash/agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@anthropic-ai/sdk": "*",
+    "@leash/agent-sdk": "*",
+    "@leash/shared": "*",
+    "cors": "^2.8.5",
+    "express": "^5.1.0"
+  }
+}

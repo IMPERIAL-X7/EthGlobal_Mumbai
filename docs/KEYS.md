@@ -70,7 +70,7 @@ A **second** Hedera testnet account, so payments visibly go to someone else on H
 | `AGENT_ACCOUNT_KEY` | 🔒🤖 | The agent's ECDSA key (hot wallet + 1 of 3 vault keys). **Lives only with the agent**, never in the server DB. |
 | `AGENT_HOT_ACCOUNT_ID` / `AGENT_VAULT_ACCOUNT_ID` | 🌐🤖 | Written by setup |
 | `ANTHROPIC_API_KEY` | 🔒 | https://console.anthropic.com → API keys. Needed only for `--mode=llm`. |
-| `AGENT_MODEL` | — | e.g. `claude-sonnet-5-5`. For the attack replay, the "legacy" side may use a weaker open model: the paper shows Claude models rarely self-escalate, so use `--mode=scripted` for a reliable demo. |
+| `AGENT_MODEL` | — | Default `claude-opus-5-5`. Only used in LLM mode. The paper found Claude Opus models did not self-escalate on the legacy wallet, so the LLM legacy run may behave well — use scripted mode for the reliable side-by-side. |
 
 ## 5. ENSv2 (Ethereum Sepolia)
 | Var | Type | Where / what |
