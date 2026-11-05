@@ -1,0 +1,81 @@
+/**
+ * Demo x402 merchant on Hedera testnet — "Weather Pro" API.
+ *
+ *  GET /forecast         0.05 USDC  (small: an agent may auto-pay this)
+ *  GET /report/premium   2.50 USDC  (large: needs the owner's World ID approval)
+ *  GET /invoice/:n       0.40 USDC  (the "pay these invoices" demo task)
+ *  GET /attacker/data    0.02 USDC  paid to the ATTACKER account (prompt-injection demo)
+ *
+ * MERCHANT_FAKE=1 swaps the real facilitator for a local one that settles on Leash's fake
+ * ledger (/v1/dev/settle), so the full demo runs offline.
+ */
+import express from "express";
+import { paymentMiddleware } from "@x402/express";
+import { HTTPFacilitatorClient, x402ResourceServer, type FacilitatorClient } from "@x402/core/server";
+import type { PaymentPayload, PaymentRequirements, SettleResponse, SupportedResponse, VerifyResponse } from "@x402/core/types";
+import { ExactHederaScheme } from "@x402/hedera/exact/server";
+
+export interface MerchantOptions {
+  fake: boolean;
+  leashApi?: string;
+  facilitatorUrl?: string;
+  payTo?: string;
+  attacker?: string;
+  usdc?: string;
+}
+
+export function buildMerchant(o: MerchantOptions) {
+  const NETWORK = "hedera:testnet" as const;
+  const USDC = o.usdc ?? "0.0.429274";
+  const MERCHANT = o.payTo ?? "0.0.6001";
+  const ATTACKER = o.attacker ?? "0.0.6666";
+  const FAKE = o.fake;
+  const LEASH_API = o.leashApi ?? "http://localhost:4000/v1";
+  const FAKE_FEE_PAYER = "0.0.7162784";
+  /** Offline facilitator: same interface as a real one, settles via Leash's fake ledger. */
+  class FakeFacilitator implements FacilitatorClient {
+    async getSupported(): Promise<SupportedResponse> {
+      return { kinds: [{ x402Version: 2, scheme: "exact", network: NETWORK, extra: { feePayer: FAKE_FEE_PAYER } }], extensions: [], signers: { "hedera:*": [FAKE_FEE_PAYER] } };
+    }
+    async verify(p: PaymentPayload): Promise<VerifyResponse> {
+      return { isValid: typeof (p.payload as any)?.transaction === "string" };
+    }
+    async settle(p: PaymentPayload): Promise<SettleResponse> {
+      const res = await fetch(`${LEASH_API}/dev/settle`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ txBytesBase64: (p.payload as any).transaction }),
+      });
+      const body: any = await res.json();
+      if (!res.ok) return { success: false, errorReason: body?.message ?? "settle failed", transaction: "", network: NETWORK };
+      return { success: true, transaction: body.txId, network: NETWORK };
+    }
+  }
+
+  const facilitator: FacilitatorClient = FAKE ? new FakeFacilitator() : new HTTPFacilitatorClient({ url: o.facilitatorUrl ?? "https://api.testnet.blocky402.com" });
+  const server = new x402ResourceServer(facilitator).register(NETWORK, new ExactHederaScheme());
+
+  const usdc = (amount: string) => ({ asset: USDC, amount }); // smallest units, 6 decimals
+  const option = (amount: string, payTo = MERCHANT) => ({ scheme: "exact", network: NETWORK, payTo, price: usdc(amount), maxTimeoutSeconds: 120 });
+
+  const app = express();
+  app.get("/", (_req, res) => res.json({ service: "Weather Pro (demo x402 merchant)", network: NETWORK, payTo: MERCHANT, fake: FAKE }));
+
+  app.use(
+    paymentMiddleware(
+      {
+        "GET /forecast": { accepts: option("50000"), description: "7-day forecast", serviceName: "Weather Pro" },
+        "GET /report/premium": { accepts: option("2500000"), description: "Premium 30-day climate report", serviceName: "Weather Pro" },
+        "GET /invoice/*": { accepts: option("400000"), description: "Invoice payment", serviceName: "Weather Pro" },
+        "GET /attacker/data": { accepts: option("20000", ATTACKER), description: "Totally legit data", serviceName: "Free Data Co" },
+      },
+      server,
+    ),
+  );
+
+  app.get("/forecast", (_req, res) => res.json({ city: "Mumbai", days: [31, 32, 30, 29, 31, 33, 32].map((t, i) => ({ day: i + 1, tempC: t })) }));
+  app.get("/report/premium", (_req, res) => res.json({ title: "Mumbai 30-day climate outlook", summary: "Warm, humid, low rain probability." }));
+  app.get("/invoice/:n", (req, res) => res.json({ invoice: req.params.n, status: "paid" }));
+  app.get("/attacker/data", (_req, res) => res.json({ data: "you just paid an attacker" }));
+  return app;
+}

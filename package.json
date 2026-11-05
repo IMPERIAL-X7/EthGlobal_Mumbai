@@ -2,13 +2,20 @@
   "name": "leash",
   "private": true,
   "type": "module",
-  "workspaces": ["packages/*", "apps/*"],
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
   "scripts": {
     "dev": "tsx watch apps/server/src/index.ts",
     "start": "tsx apps/server/src/index.ts",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc -p tsconfig.json"
+    "typecheck": "tsc -p tsconfig.json",
+    "merchant": "tsx apps/merchant/src/index.ts",
+    "legacy": "tsx apps/legacy-sim/src/index.ts",
+    "setup:hedera": "tsx scripts/setup-hedera.ts",
+    "dev:fake": "LEASH_FAKE_CHAINS=1 tsx watch apps/server/src/index.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
