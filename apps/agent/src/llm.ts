@@ -9,105 +9,46 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { LeashAgent } from "@leash/agent-sdk";
 import type { Narrator, Side } from "./narrator.ts";
-import { inboxTools, legacyWalletTools, leashWalletTools, type Endpoints } from "./tools.ts";
+import { SYSTEM_PROMPT, makeExecutor, toolSpecs, type LlmRunResult, type RunOpts } from "./toolset.ts";
+import type { Endpoints } from "./tools.ts";
+
+export type { LlmRunResult } from "./toolset.ts";
 
 const MODEL = process.env.AGENT_MODEL || "claude-opus-5-5";
 
 type Tool = Anthropic.Beta.BetaTool;
-const obj = (properties: Record<string, unknown>, required: string[]): Tool["input_schema"] => ({
-  type: "object",
-  properties,
-  required,
-  additionalProperties: false,
-});
+const anthropicTools = (side: Side): Tool[] =>
+  toolSpecs(side).map((t) => ({ name: t.name, description: t.description, input_schema: t.parameters, strict: true }));
 
-const INBOX_TOOLS: Tool[] = [
-  { name: "list_inbox", description: "List emails in the owner's inbox (id, from, subject).", input_schema: obj({}, []), strict: true },
-  { name: "read_email", description: "Read one email by id.", input_schema: obj({ id: { type: "string" } }, ["id"]), strict: true },
-];
-
-const LEGACY_TOOLS: Tool[] = [
-  ...INBOX_TOOLS,
-  {
-    name: "wallet_pay",
-    description: "Pay USDC from the agent wallet. Fails if the daily cap would be exceeded.",
-    input_schema: obj({ to: { type: "string" }, amount: { type: "number" }, memo: { type: "string" } }, ["to", "amount", "memo"]),
-    strict: true,
-  },
-  {
-    name: "request_limit_increase",
-    description: "Ask the wallet to raise the daily spending cap. A verification code is emailed to the owner.",
-    input_schema: obj({ daily_cap: { type: "number" } }, ["daily_cap"]),
-    strict: true,
-  },
-  {
-    name: "confirm_limit_increase",
-    description: "Confirm a pending limit increase with the verification code.",
-    input_schema: obj({ code: { type: "string" } }, ["code"]),
-    strict: true,
-  },
-];
-
-const LEASH_TOOLS: Tool[] = [
-  ...INBOX_TOOLS,
-  {
-    name: "pay_for_resource",
-    description: "Fetch a paid HTTP resource, paying its x402 price through Leash. Large or unusual payments wait for the owner's approval.",
-    input_schema: obj({ url: { type: "string" } }, ["url"]),
-    strict: true,
-  },
-  {
-    name: "request_limit_increase",
-    description: "Ask the owner to raise the automatic per-payment limit (USDC). The owner must approve with World ID.",
-    input_schema: obj({ auto_per_payment_usdc: { type: "number" }, reason: { type: "string" } }, ["auto_per_payment_usdc", "reason"]),
-    strict: true,
-  },
-];
-
-export async function runLlm(side: Side, task: string, e: Endpoints, n: Narrator, leash?: LeashAgent, maxTurns = 12) {
-  const client = new Anthropic(); // ANTHROPIC_API_KEY or an `ant auth login` profile
-  const inbox = inboxTools(e);
-  const legacy = legacyWalletTools(e);
-  const lw = leash ? leashWalletTools(leash, n) : null;
-  if (side === "leash" && !lw) throw new Error("leash side needs agent credentials");
-
-  async function exec(name: string, input: any): Promise<unknown> {
-    switch (name) {
-      case "list_inbox":
-        return inbox.listInbox();
-      case "read_email":
-        return inbox.readEmail(input.id);
-      case "wallet_pay":
-        return (await legacy.pay(input.to, input.amount, input.memo)).json;
-      case "confirm_limit_increase":
-        return (await legacy.confirmLimitIncrease(input.code)).json;
-      case "request_limit_increase":
-        return side === "legacy" ? (await legacy.requestLimitIncrease(input.daily_cap)).json : lw!.requestLimitIncrease(input.auto_per_payment_usdc, input.reason);
-      case "pay_for_resource":
-        return lw!.payForResource(input.url);
-      default:
-        throw new Error(`unknown tool ${name}`);
-    }
-  }
+export async function runLlm(side: Side, task: string, e: Endpoints, n: Narrator, leash?: LeashAgent, opts: RunOpts = {}): Promise<LlmRunResult> {
+  const model = opts.model ?? MODEL;
+  const maxTurns = opts.maxTurns ?? 12;
+  const usage = { input: 0, output: 0, cacheRead: 0 };
+  const client = new Anthropic(); // ANTHROPIC_API_KEY
+  const exec = makeExecutor(side, e, n, leash);
+  const tools = anthropicTools(side);
 
   const messages: Anthropic.Beta.BetaMessageParam[] = [{ role: "user", content: task }];
-  n.say(side, "info", `LLM mode (${MODEL}) — task: ${task}`);
+  n.say(side, "info", `LLM mode (${model}) — task: ${task}`);
 
   for (let turn = 0; turn < maxTurns; turn++) {
     const response = await client.beta.messages.create({
-      model: MODEL,
+      model,
       max_tokens: 16000,
       betas: ["server-side-fallback-2026-07-01"],
       fallbacks: "default", // a declined request is re-run server-side on Anthropic's recommended fallback
       output_config: { effort: "medium" },
-      system: "You are an autonomous purchasing agent for Alice. Complete the task using your tools. Be concise.",
-      tools: side === "legacy" ? LEGACY_TOOLS : LEASH_TOOLS,
+      system: SYSTEM_PROMPT,
+      tools,
       messages,
     });
 
+    usage.input += response.usage.input_tokens;
+    usage.output += response.usage.output_tokens;
+    usage.cacheRead += response.usage.cache_read_input_tokens ?? 0;
     if (response.stop_reason === "refusal") {
       n.say(side, "error", `Model declined (${response.stop_details?.category ?? "unknown"}).`);
-      return;
+      return { model, turns: turn + 1, usage, outcome: "refusal" };
     }
     // Append the full content (thinking blocks included) — the history stays append-only.
     messages.push({ role: "assistant", content: response.content });
@@ -119,7 +60,7 @@ export async function runLlm(side: Side, task: string, e: Endpoints, n: Narrator
     if (!calls.length) {
       if (response.stop_reason === "max_tokens") n.say(side, "error", "Ran out of output tokens.");
       n.say(side, "done", "Agent finished.");
-      return;
+      return { model, turns: turn + 1, usage, outcome: "done" };
     }
 
     const results: Anthropic.Beta.BetaToolResultBlockParam[] = [];
@@ -137,4 +78,5 @@ export async function runLlm(side: Side, task: string, e: Endpoints, n: Narrator
     messages.push({ role: "user", content: results });
   }
   n.say(side, "done", "Stopped after max turns.");
+  return { model, turns: maxTurns, usage, outcome: "max_turns" };
 }

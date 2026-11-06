@@ -15,7 +15,7 @@ import { LeashAgent } from "@leash/agent-sdk";
 import { loadDotenv } from "../../server/src/config.ts";
 import { Narrator, type Side } from "./narrator.ts";
 import { runLeashScripted, runLegacyScripted } from "./scripted.ts";
-import { runLlm } from "./llm.ts";
+import { runAgent, backendAvailable } from "./providers.ts";
 
 loadDotenv();
 const env = process.env;
@@ -47,7 +47,7 @@ async function run(side: Side, mode: "scripted" | "llm", task: string) {
       if (side === "legacy") await runLegacyScripted(endpoints, narrator);
       else await runLeashScripted(endpoints, leashAgent(), narrator);
     } else {
-      await runLlm(side, task, endpoints, narrator, side === "leash" ? leashAgent() : undefined);
+      await runAgent(side, task, endpoints, narrator, side === "leash" ? leashAgent() : undefined, { model: env.AGENT_MODEL || "cli:sonnet" });
     }
   } catch (e) {
     narrator.say(side, "error", (e as Error).message);
@@ -86,7 +86,7 @@ app.get("/events", (req, res) => {
   req.on("close", off);
 });
 
-app.get("/status", (_req, res) => res.json({ configured: !!creds, running: [...running], endpoints, llm: !!env.ANTHROPIC_API_KEY }));
+app.get("/status", (_req, res) => res.json({ configured: !!creds, running: [...running], endpoints, llm: backendAvailable(env.AGENT_MODEL || "cli:sonnet") === null, model: env.AGENT_MODEL || "cli:sonnet" }));
 
 const port = Number(env.AGENT_PORT ?? 4400);
 app.listen(port, () => console.log(`demo agent runner on :${port}`));

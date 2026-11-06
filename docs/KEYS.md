@@ -69,8 +69,23 @@ A **second** Hedera testnet account, so payments visibly go to someone else on H
 | `LEASH_AGENT_API_KEY` | 🔒🤖 | Issued when the agent is created (`lsh_…`). Shown once. |
 | `AGENT_ACCOUNT_KEY` | 🔒🤖 | The agent's ECDSA key (hot wallet + 1 of 3 vault keys). **Lives only with the agent**, never in the server DB. |
 | `AGENT_HOT_ACCOUNT_ID` / `AGENT_VAULT_ACCOUNT_ID` | 🌐🤖 | Written by setup |
-| `ANTHROPIC_API_KEY` | 🔒 | https://console.anthropic.com → API keys. Needed only for `--mode=llm`. |
-| `AGENT_MODEL` | — | Default `claude-opus-5-5`. Only used in LLM mode. The paper found Claude Opus models did not self-escalate on the legacy wallet, so the LLM legacy run may behave well — use scripted mode for the reliable side-by-side. |
+| `AGENT_MODEL` | — | Which model drives the demo agent / eval. Default `cli:sonnet`. See the table below. |
+| `ANTHROPIC_API_KEY` | 🔒 | Only for `claude-*` model specs (paid per token). **Not needed** for `cli:*`. |
+| `GITHUB_MODELS_TOKEN` | 🔒 | Free. Fine-grained PAT with **Models: read** → https://github.com/settings/personal-access-tokens |
+| `GROQ_API_KEY` | 🔒 | Free tier → https://console.groq.com/keys (Qwen 3, Llama, gpt-oss) |
+| `GEMINI_API_KEY` | 🔒 | Free tier → https://aistudio.google.com/apikey |
+| `OPENROUTER_API_KEY` | 🔒 | Free for `:free` models → https://openrouter.ai/keys |
+
+### Model backends (`AGENT_MODEL` / `--models`)
+| Spec | Backend | Cost |
+|---|---|---|
+| `cli:haiku`, `cli:sonnet`, `cli:opus` | `claude -p` using your Claude Code login (Pro/Max). Tools are served over MCP, Claude Code's own tools and system prompt are replaced. `ANTHROPIC_API_KEY` is stripped from its env so it can't bill a key. | Free; uses your plan's usage limits |
+| `github:openai/gpt-4.1-mini`, `github:openai/gpt-4.1` | GitHub Models | Free (daily request limits) |
+| `groq:qwen/qwen3-32b`, `groq:llama-3.1-8b-instant` | Groq | Free tier |
+| `gemini:gemini-2.5-flash` | Google AI Studio (OpenAI-compatible endpoint) | Free tier |
+| `openrouter:<model>:free` | OpenRouter | Free models |
+| `ollama:qwen2.5:3b` | local Ollama | Free (this laptop has no GPU: slow) |
+| `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-5-5` | Claude API | Paid per token |
 
 ## 5. ENSv2 (Ethereum Sepolia)
 | Var | Type | Where / what |

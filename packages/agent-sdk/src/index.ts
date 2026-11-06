@@ -60,7 +60,7 @@ export class LeashAgent {
   private network: "hedera:testnet" | "hedera:mainnet";
   private log: (m: string, d?: unknown) => void;
 
-  constructor(private cfg: LeashAgentConfig) {
+  constructor(readonly cfg: LeashAgentConfig) {
     this.key = PrivateKey.fromStringDer(cfg.agentPrivateKey);
     this.f = cfg.fetch ?? globalThis.fetch.bind(globalThis);
     this.network = cfg.network ?? "hedera:testnet";
