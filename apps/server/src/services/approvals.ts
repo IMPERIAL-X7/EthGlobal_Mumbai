@@ -35,6 +35,8 @@ function view(d: Deps, ap: ApprovalRow) {
     agent: { id: agent.id, ens: agent.ens_name },
     kind: i.kind,
     summary: i.summary,
+    /** The agent's own explanation. UNTRUSTED: show it labelled "The agent says (unverified)". */
+    agentReason: i.agent_reason ?? undefined,
     warnings: JSON.parse(ap.warnings) as string[],
     intent: frozen(i),
     /** The browser recomputes this from `intent` (with @leash/shared) and shows a ✓ if it matches. */
@@ -74,7 +76,8 @@ export async function approvalWorldRequest(d: Deps, owner: Owner, id: string) {
   return d.world.requestParams({
     action: ap.world_action,
     sessionId: owner.world_session_id,
-    actionDescription: i.summary.slice(0, 200), // shown in World App; built from the frozen intent, never agent text
+    actionDescription: i.summary.slice(0, 200), // shown in World App: facts only (agent_reason is kept out of summary)
+    signal: ap.world_action, // binds a session proof to THIS approval (session proofs carry no action)
     ttlSeconds: Math.max(30, Math.min(300, ap.expires_at - now())),
   });
 }
@@ -95,7 +98,7 @@ export async function approveWithWorld(d: Deps, owner: Owner, id: string, result
 
   let proof;
   try {
-    proof = await d.world.verify(result, { action: ap.world_action });
+    proof = await d.world.verify(result, { action: ap.world_action, signal: ap.world_action });
   } catch (e) {
     if (e instanceof WorldError) throw new HttpError(422, e.message, "proof_invalid");
     throw e;

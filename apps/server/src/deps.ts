@@ -53,9 +53,8 @@ export function buildDeps(cfg: Config, overrides: Partial<Deps> = {}): Deps {
       ? new FakeNameService(cfg.ENS_PARENT_NAME)
       : new RealNameService({
           rpcUrl: cfg.SEPOLIA_RPC_URL!,
-          operatorPrivateKey: cfg.ENS_OPERATOR_PRIVATE_KEY as Hex,
+          operatorPrivateKey: cfg.ENS_OPERATOR_PRIVATE_KEY!,
           parent: cfg.ENS_PARENT_NAME,
-          userRegistry: cfg.ENS_USER_REGISTRY as Address,
           resolver: cfg.ENS_RESOLVER as Address,
         }));
 

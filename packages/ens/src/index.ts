@@ -5,7 +5,7 @@
  *     leash.hedera.vault, leash.audit
  *   - unregister = revoke (name stops resolving)
  */
-import { createPublicClient, createWalletClient, http, keccak256, toHex, type Address, type Hex } from "viem";
+import { createPublicClient, createWalletClient, encodeFunctionData, http, toHex, type Address, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { sepolia } from "viem/chains";
 import { normalize, packetToBytes } from "viem/ens";
@@ -67,51 +67,25 @@ export class FakeNameService implements NameService {
 }
 
 // ---------------- real (ENSv2, Sepolia) ----------------
-// UNVERIFIED until spike S3: ABIs below are transcribed from docs.ens.domains/ensv2 and must be
-// checked against the deployed contracts (docs.ens.domains/learn/deployments#sepolia-ensv2).
+// Verified live on Sepolia (Nov 6) with scripts/setup-ens.ts: the operator owns <parent> on the ENSv2
+// ETHRegistry and its resolver is our own PermissionedResolver. Agents are NOT separate registry
+// entries: each agent is `<label>.<parent>` whose text records live on that resolver, and ENSv2's
+// Universal Resolver finds them by wildcard (ENSIP-10). One tx per agent, and the parent owner
+// (Leash) is the only writer, so an agent can never edit its own identity.
 
-const userRegistryAbi = [
-  {
-    type: "function",
-    name: "register",
-    stateMutability: "nonpayable",
-    inputs: [
-      { name: "label", type: "string" },
-      { name: "owner", type: "address" },
-      { name: "registry", type: "address" },
-      { name: "resolver", type: "address" },
-      { name: "roleBitmap", type: "uint256" },
-      { name: "expiry", type: "uint64" },
-    ],
-    outputs: [{ name: "tokenId", type: "uint256" }],
-  },
-  { type: "function", name: "unregister", stateMutability: "nonpayable", inputs: [{ name: "anyId", type: "uint256" }], outputs: [] },
-] as const;
+import { PermissionedResolverImplAbi } from "./ensv2.ts";
+export { ENSV2_SEPOLIA } from "./ensv2.ts";
 
-const resolverAbi = [
-  {
-    type: "function",
-    name: "setText",
-    stateMutability: "nonpayable",
-    inputs: [
-      { name: "name", type: "bytes" },
-      { name: "key", type: "string" },
-      { name: "value", type: "string" },
-    ],
-    outputs: [],
-  },
-  { type: "function", name: "multicall", stateMutability: "nonpayable", inputs: [{ name: "data", type: "bytes[]" }], outputs: [{ type: "bytes[]" }] },
-] as const;
+/** Extra record (beyond LEASH_KEYS): unix expiry of the agent identity. */
+const EXPIRES_KEY = "leash.expires";
 
 export interface RealEnsConfig {
   rpcUrl: string;
-  operatorPrivateKey: Hex;
-  parent: string; // e.g. leash.eth (owned by operator)
-  /** UserRegistry deployed for the parent (VerifiableFactory), and the PermissionedResolver used for records. */
-  userRegistry: Address;
+  /** Hex private key, with or without 0x. Owns <parent> and holds text roles on the resolver. */
+  operatorPrivateKey: string;
+  parent: string; // e.g. leash.eth
+  /** Our PermissionedResolver (ENS_RESOLVER, written by scripts/setup-ens.ts). */
   resolver: Address;
-  /** Role bitmap granted to the subname owner at registration (spike S3). */
-  roleBitmap?: bigint;
 }
 
 export class RealNameService implements NameService {
@@ -120,10 +94,13 @@ export class RealNameService implements NameService {
   private pub;
   private wallet;
   private account;
+  /** One operator account => serialize writes so concurrent updates don't race on the nonce. */
+  private queue: Promise<unknown> = Promise.resolve();
 
   constructor(private cfg: RealEnsConfig) {
     this.parent = cfg.parent;
-    this.account = privateKeyToAccount(cfg.operatorPrivateKey);
+    const pk = cfg.operatorPrivateKey.startsWith("0x") ? cfg.operatorPrivateKey : `0x${cfg.operatorPrivateKey}`;
+    this.account = privateKeyToAccount(pk as Hex);
     this.pub = createPublicClient({ chain: sepolia, transport: http(cfg.rpcUrl) });
     this.wallet = createWalletClient({ chain: sepolia, transport: http(cfg.rpcUrl), account: this.account });
   }
@@ -136,56 +113,58 @@ export class RealNameService implements NameService {
     return toHex(packetToBytes(normalize(name)));
   }
 
-  private async send(fn: () => Promise<Hex>): Promise<Hex> {
-    const hash = await fn();
-    const rx = await this.pub.waitForTransactionReceipt({ hash });
-    if (rx.status !== "success") throw new Error(`ENS tx reverted: ${hash}`);
-    return hash;
+  private writeTexts(label: string, kv: [string, string][]): Promise<{ txHash?: Hex }> {
+    if (!kv.length) return Promise.resolve({});
+    const name = this.dnsName(this.fullName(label));
+    const run = async () => {
+      const calls = kv.map(([k, v]) => encodeFunctionData({ abi: PermissionedResolverImplAbi, functionName: "setText", args: [name, k, v] }));
+      const hash = await this.wallet.writeContract({ address: this.cfg.resolver, abi: PermissionedResolverImplAbi, functionName: "multicall", args: [calls] });
+      const rx = await this.pub.waitForTransactionReceipt({ hash });
+      if (rx.status !== "success") throw new Error(`ENS tx reverted: ${hash}`);
+      return { txHash: hash };
+    };
+    const p = this.queue.then(run, run);
+    this.queue = p.catch(() => {});
+    return p;
   }
 
   async registerAgent(label: string, records: AgentRecords, expiresAt: number) {
-    const txHash = await this.send(() =>
-      this.wallet.writeContract({
-        address: this.cfg.userRegistry,
-        abi: userRegistryAbi,
-        functionName: "register",
-        args: [label, this.account.address, "0x0000000000000000000000000000000000000000", this.cfg.resolver, this.cfg.roleBitmap ?? 0n, BigInt(expiresAt)],
-      }),
-    );
-    await this.setRecords(label, records);
+    const kv = Object.entries(records)
+      .filter(([, v]) => v !== undefined)
+      .map(([k, v]) => [LEASH_KEYS[k as keyof typeof LEASH_KEYS], v!] as [string, string]);
+    const { txHash } = await this.writeTexts(label, [...kv, [EXPIRES_KEY, String(expiresAt)]]);
     return { name: this.fullName(label), txHash };
   }
 
-  async setRecords(label: string, records: AgentRecords) {
-    const name = this.dnsName(this.fullName(label));
-    const entries = Object.entries(records).filter(([, v]) => v !== undefined) as [keyof typeof LEASH_KEYS, string][];
-    if (!entries.length) return {};
-    const { encodeFunctionData } = await import("viem");
-    const calls = entries.map(([k, v]) => encodeFunctionData({ abi: resolverAbi, functionName: "setText", args: [name, LEASH_KEYS[k], v] }));
-    const txHash = await this.send(() =>
-      this.wallet.writeContract({ address: this.cfg.resolver, abi: resolverAbi, functionName: "multicall", args: [calls] }),
-    );
-    return { txHash };
+  setRecords(label: string, records: AgentRecords) {
+    const kv = Object.entries(records)
+      .filter(([, v]) => v !== undefined)
+      .map(([k, v]) => [LEASH_KEYS[k as keyof typeof LEASH_KEYS], v!] as [string, string]);
+    return this.writeTexts(label, kv);
   }
 
-  async revoke(label: string) {
-    // anyId: ENSv2 accepts the label's token id / labelhash form (spike S3 to confirm).
-    const anyId = BigInt(keccak256(toHex(label)));
-    const txHash = await this.send(() =>
-      this.wallet.writeContract({ address: this.cfg.userRegistry, abi: userRegistryAbi, functionName: "unregister", args: [anyId] }),
-    );
-    return { txHash };
+  /** Revoke = status "revoked" and the wallet records cleared, in one tx. Sellers must check status. */
+  revoke(label: string) {
+    return this.writeTexts(label, [
+      [LEASH_KEYS.status, "revoked"],
+      [LEASH_KEYS.hot, ""],
+      [LEASH_KEYS.vault, ""],
+      [EXPIRES_KEY, "0"],
+    ]);
   }
 
   async readRecords(name: string) {
     const out: AgentRecords & { exists: boolean } = { exists: false };
-    for (const [k, key] of Object.entries(LEASH_KEYS) as [keyof typeof LEASH_KEYS, string][]) {
-      const v = await this.pub.getEnsText({ name: normalize(name), key }).catch(() => null);
-      if (v) {
-        out[k] = v;
-        out.exists = true;
-      }
-    }
+    const keys = Object.entries(LEASH_KEYS) as [keyof typeof LEASH_KEYS, string][];
+    const [vals, exp] = await Promise.all([
+      Promise.all(keys.map(([, key]) => this.pub.getEnsText({ name: normalize(name), key }).catch(() => null))),
+      this.pub.getEnsText({ name: normalize(name), key: EXPIRES_KEY }).catch(() => null),
+    ]);
+    keys.forEach(([k], i) => {
+      if (vals[i]) out[k] = vals[i]!;
+    });
+    const expired = exp != null && Number(exp) < Date.now() / 1000;
+    out.exists = !!out.status && out.status !== "revoked" && !expired;
     return out;
   }
 

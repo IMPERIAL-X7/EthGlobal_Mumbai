@@ -12,7 +12,10 @@ export interface ServerEvents {
     agentId: string;
     approvalId: string;
     intentId: string;
+    /** Facts only (this is what World App shows). */
     summary: string;
+    /** The agent's own words, untrusted: render as "The agent says (unverified)". */
+    agentReason?: string | null;
     intentHash: string;
     worldAction: string;
     warnings: string[];

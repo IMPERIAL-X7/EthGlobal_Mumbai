@@ -1,7 +1,7 @@
 import { PrivateKey } from "@leash/hedera";
 import { defaultPolicy, hashPolicy, Policy, type AgentStatus, type CreateAgentReq } from "@leash/shared";
 import type { Deps } from "../deps.ts";
-import { now } from "../db.ts";
+import { now, utcDay } from "../db.ts";
 import { audit, bad, conflict, forbidden, newId, notFound, randomToken, sha256 } from "./common.ts";
 import type { Owner } from "./auth.ts";
 
@@ -78,18 +78,17 @@ export async function createAgent(d: Deps, owner: Owner, req: CreateAgentReq) {
       .run(id, JSON.stringify(policy), policyHash, now());
   })();
 
-  // ENS identity (best effort: the agent works even if ENS is slow; the owner can retry).
-  let ensError: string | undefined;
-  await d.ens
+  // ENS identity: in the background (a Sepolia tx takes ~10-20 s; creation must not wait for it).
+  // Best effort: the agent works without it; the owner sees the ENS link once the record lands.
+  const ensError: string | undefined = undefined;
+  void d.ens
     .registerAgent(
       req.name,
       { status: "active", policy: policyHash, hot: accounts.hot, vault: accounts.vault, audit: d.audit.topicId, owner: owner.id },
       now() + AGENT_TTL,
     )
-    .catch((e) => {
-      ensError = String(e?.message ?? e);
-      console.error("[ens] register failed:", ensError);
-    });
+    .then((r) => console.log(`[ens] ${r.name} registered${r.txHash ? ` (tx ${r.txHash})` : ""}`))
+    .catch((e) => console.error("[ens] register failed:", String(e?.message ?? e).slice(0, 300)));
 
   // Fake mode: pre-fund so the whole flow is clickable offline.
   if (d.ledger.mode === "fake") {
@@ -124,9 +123,14 @@ export function publicAgent(a: AgentRow) {
 export async function agentDetail(d: Deps, a: AgentRow) {
   const [hot, vault] = await Promise.all([d.ledger.getBalances(a.hot_account), d.ledger.getBalances(a.vault_account)]);
   const pol = activePolicy(d, a.id);
+  // Automatic spend so far today (UTC), per asset, from the same counters the policy engine uses.
+  const today = Object.fromEntries(
+    (d.db.prepare(`SELECT asset, auto_spent FROM spend_counters WHERE agent_id = ? AND day = ?`).all(a.id, utcDay()) as { asset: string; auto_spent: string }[]).map((r) => [r.asset, r.auto_spent]),
+  );
   return {
     agent: publicAgent(a),
     balances: { hot, vault },
+    spentToday: today,
     policy: pol,
     links: { ens: d.ens.explorerUrl(a.ens_name), audit: d.audit.topicUrl() },
     modes: { world: d.world.mode, hedera: d.ledger.mode, ens: d.ens.mode },
@@ -166,7 +170,7 @@ export async function setStatus(d: Deps, owner: Owner, a: AgentRow, status: Agen
 export function activity(d: Deps, agentId: string, limit = 50, before?: number) {
   const rows = d.db
     .prepare(
-      `SELECT i.id, i.kind, i.decision, i.reasons, i.status, i.summary, i.created_at, i.expires_at, i.hash,
+      `SELECT i.id, i.kind, i.decision, i.reasons, i.status, i.summary, i.agent_reason, i.canonical_json, i.created_at, i.expires_at, i.hash,
               a.id AS approval_id, a.status AS approval_status,
               p.tx_id, p.source
          FROM intents i
@@ -176,7 +180,12 @@ export function activity(d: Deps, agentId: string, limit = 50, before?: number) 
         ORDER BY i.created_at DESC, i.rowid DESC LIMIT ?`,
     )
     .all(agentId, before ?? Number.MAX_SAFE_INTEGER, limit) as any[];
-  return rows.map((r) => ({ ...r, reasons: JSON.parse(r.reasons), explorerUrl: r.tx_id ? d.ledger.explorerTxUrl(r.tx_id) : null }));
+  return rows.map(({ canonical_json, ...r }) => {
+    const c = JSON.parse(canonical_json);
+    // Frozen facts for the UI (amount/asset/payee/resource for payments); never agent free text except agent_reason.
+    const facts = c.kind === "payment" ? { amount: c.amount, asset: c.asset, payTo: c.payTo, resource: c.resource } : {};
+    return { ...r, ...facts, reasons: JSON.parse(r.reasons), explorerUrl: r.tx_id ? d.ledger.explorerTxUrl(r.tx_id) : null };
+  });
 }
 
 export function auditLog(d: Deps, agentId: string) {

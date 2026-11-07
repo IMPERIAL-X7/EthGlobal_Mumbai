@@ -11,7 +11,7 @@ import {
   SubmitPaymentReq,
   WorldProofReq,
 } from "@leash/shared";
-import { fakeProof } from "@leash/world";
+import { WorldError, fakeProof } from "@leash/world";
 import type { Deps } from "./deps.ts";
 import { HttpError, notFound } from "./services/common.ts";
 import { logout, ownerFromSessionToken, worldAuthRequest, worldAuthVerify, type Owner } from "./services/auth.ts";
@@ -208,7 +208,15 @@ export function buildApp(d: Deps) {
 
   app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
     if (err instanceof HttpError) return void res.status(err.status).json({ error: err.code, message: err.message });
+    // A rejected / malformed World ID proof is the caller's problem, not a server fault.
+    if (err instanceof WorldError) return void res.status(400).json({ error: "world_proof_invalid", message: err.message });
     if ((err as any)?.type === "entity.parse.failed") return void res.status(400).json({ error: "bad_json", message: "invalid JSON body" });
+    // Hedera / Sepolia node outages (e.g. testnet maintenance): tell the client it's the chain, not us.
+    const msg = String((err as any)?.message ?? "");
+    if (/gRPC service failed|UNAVAILABLE|max attempts of \d+ was reached|ECONNRESET|ETIMEDOUT/.test(msg)) {
+      console.error("[http] chain unavailable:", msg.slice(0, 200));
+      return void res.status(503).json({ error: "chain_unavailable", message: "The blockchain network is temporarily unavailable. Try again in a minute." });
+    }
     console.error("[http] unhandled:", err);
     res.status(500).json({ error: "internal", message: "internal error" });
   });

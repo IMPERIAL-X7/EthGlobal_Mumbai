@@ -44,7 +44,6 @@ const Env = z.object({
   SEPOLIA_RPC_URL: z.string().optional(),
   ENS_OPERATOR_PRIVATE_KEY: z.string().optional(),
   ENS_PARENT_NAME: z.string().default("leash.eth"),
-  ENS_USER_REGISTRY: z.string().optional(),
   ENS_RESOLVER: z.string().optional(),
 });
 export type Config = z.infer<typeof Env> & {
@@ -64,7 +63,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     fake: {
       world: all || !(c.WORLD_APP_ID && c.WORLD_RP_ID && c.WORLD_SIGNING_KEY),
       hedera: all || !(c.HEDERA_OPERATOR_ID && c.HEDERA_OPERATOR_KEY && c.LEASH_SERVER_COSIGN_KEY && c.HCS_AUDIT_TOPIC_ID),
-      ens: all || !(c.SEPOLIA_RPC_URL && c.ENS_OPERATOR_PRIVATE_KEY && c.ENS_USER_REGISTRY && c.ENS_RESOLVER),
+      ens: all || !(c.SEPOLIA_RPC_URL && c.ENS_OPERATOR_PRIVATE_KEY && c.ENS_RESOLVER),
     },
   };
 }

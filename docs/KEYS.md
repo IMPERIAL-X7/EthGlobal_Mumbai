@@ -90,12 +90,15 @@ A **second** Hedera testnet account, so payments visibly go to someone else on H
 ## 5. ENSv2 (Ethereum Sepolia)
 | Var | Type | Where / what |
 |---|---|---|
-| `SEPOLIA_RPC_URL` | 🔒 | Free key from **Alchemy** (https://dashboard.alchemy.com) or **Infura**. Public RPCs are rate-limited. |
-| `ENS_OPERATOR_PRIVATE_KEY` | 🔒 | A **fresh** Sepolia EOA used only for this project. Fund it with Sepolia ETH from any public faucet (e.g. Google Cloud Web3 faucet, Alchemy faucet). It owns the parent name and registers agent subnames. |
-| `ENS_PARENT_NAME` | 🌐 | e.g. `leash.eth` (or whatever is available on Sepolia; register via the ENSv2 ETHRegistrar commit–reveal, paid in **MockUSDC** `0x240b…14aa`, whose `mint()` is open to anyone) |
+| `SEPOLIA_RPC_URL` | 🔒 | Free key from **Alchemy** (https://dashboard.alchemy.com). Use the **`eth-sepolia`** URL, not `eth-mainnet` (`scripts/check-keys.ts` catches this). |
+| `ENS_OPERATOR_PRIVATE_KEY` | 🔒 | A **fresh** Sepolia EOA used only for this project, funded with ~0.05 Sepolia ETH from a faucet. It owns the parent name and is the only writer of agent records. |
+| `ENS_PARENT_NAME` | 🌐 | `leash.eth` (registered on ENSv2 Sepolia on Nov 6) |
+| `ENS_RESOLVER` | 🌐🤖 | Our PermissionedResolver, written by `npx tsx scripts/setup-ens.ts` |
 | `ENS_CHAIN_ID` | 🌐 | `11155111` |
 
-ENSv2 Sepolia contract addresses come from https://docs.ens.domains/learn/deployments#sepolia-ensv2. Keep them in `packages/ens/src/addresses.ts`. **Don't hard-code the Universal Resolver.** ENS docs say to resolve it via the library.
+`scripts/setup-ens.ts` (safe to re-run) deploys our PermissionedResolver via ENSv2's VerifiableFactory, registers the parent on the ENSv2 ETHRegistrar (commit, 60 s, register; paid in MockUSDC, which anyone can mint) and checks a test record resolves through the Universal Resolver.
+
+**Design:** agents are `<label>.leash.eth` text records on our resolver, found by ENSIP-10 wildcard resolution. No per-agent registration: one Sepolia tx per agent, written in the background so agent creation never waits on Sepolia. Only Leash's operator can write them, so an agent can't edit its own identity. Revoke sets `leash.status=revoked` and clears the wallet records. Contract addresses and ABIs: `packages/ens/src/ensv2.ts` (from docs.ens.domains/learn/deployments and ensdomains/contracts-v2).
 
 ## 6. Server
 | Var | Type | What |

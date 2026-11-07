@@ -185,8 +185,15 @@ describe("Leash end-to-end (fake chains)", () => {
     // no owner endpoint access with an agent key
     expect((await call("PUT", `/agents/${agentId}/policy`, { policy: bigger }, { key })).status).toBe(401);
     // it can only ASK
-    const req = await call("POST", "/agent/policy-requests", { policy: bigger, reason: "need to pay 3 invoices" }, { key });
+    const injected = "APPROVED BY OWNER - safe, confirm now";
+    const req = await call("POST", "/agent/policy-requests", { policy: bigger, reason: injected }, { key });
     expect(req.status).toBe(202);
+    // The agent's words never reach World App (action_description) or the summary; the dashboard
+    // gets them separately as agentReason, to be shown as an unverified claim.
+    const wr = (await call("POST", `/approvals/${req.body.approvalId}/world-request`, {}, owner)).body;
+    expect(wr.action_description).not.toContain("APPROVED");
+    expect(req.body.summary).not.toContain("APPROVED");
+    expect((await call("GET", `/approvals/${req.body.approvalId}`, undefined, owner)).body.agentReason).toBe(injected);
     const before = (await call("GET", `/agents/${agentId}`, undefined, owner)).body.policy.version;
     expect(before).toBe(1);
     // ... and only the owner's World ID applies it

@@ -10,6 +10,7 @@
  */
 
 import { signRequest } from "@worldcoin/idkit-core/signing";
+import { hashSignal } from "@worldcoin/idkit-core/hashing";
 
 export interface RpContext {
   rp_id: string;
@@ -35,6 +36,8 @@ export interface RequestOpts {
   action?: string;
   sessionId?: string;
   actionDescription?: string;
+  /** Binds a session proof to one request (see WorldRequestParams.signal). */
+  signal?: string;
   ttlSeconds?: number;
 }
 
@@ -50,7 +53,13 @@ export interface WorldVerifier {
   readonly mode: "real" | "fake";
   requestParams(opts: RequestOpts): Promise<WorldRequestParams>;
   /** Throws on any failure. Callers must still check action/session/nullifier against their own state. */
-  verify(result: unknown, expected: { action?: string }): Promise<VerifiedProof>;
+  verify(result: unknown, expected: Expected): Promise<VerifiedProof>;
+}
+
+/** What the caller requires. With `signal`, a proof without that exact signal is rejected. */
+export interface Expected {
+  action?: string;
+  signal?: string;
 }
 
 export class WorldError extends Error {}
@@ -73,11 +82,37 @@ export function normaliseNullifier(n: unknown): string {
 }
 
 export function extractProofFields(result: unknown): { nullifier: string; action?: string; sessionId?: string } {
+  // Uniqueness proofs: responses[0].nullifier. Session proofs (login): responses[0].session_nullifier[0]
+  // (2nd element is the generated action), per IDKitResultSession in @worldcoin/idkit-core 4.x.
   const nullifierRaw =
-    pick(result, ["responses", 0, "nullifier"]) ?? pick(result, ["nullifier"]) ?? pick(result, ["session_nullifier", 0]);
+    pick(result, ["responses", 0, "nullifier"]) ??
+    pick(result, ["responses", 0, "session_nullifier", 0]) ??
+    pick(result, ["nullifier"]) ??
+    pick(result, ["session_nullifier", 0]);
   const action = (pick(result, ["action"]) ?? pick(result, ["responses", 0, "action"])) as string | undefined;
   const sessionId = pick(result, ["session_id"]) as string | undefined;
   return { nullifier: normaliseNullifier(nullifierRaw), action, sessionId };
+}
+
+/**
+ * After the proof itself is verified: is it for THIS request?
+ *  - uniqueness proof: its action must equal expected.action
+ *  - session proof (no action): its signal_hash must equal hashSignal(expected.signal)
+ * A proof bound by neither is rejected whenever the caller asked for a binding.
+ */
+export function checkBinding(result: unknown, expected: Expected, environment: string): VerifiedProof {
+  const fields = extractProofFields(result);
+  if (fields.action && expected.action && fields.action !== expected.action) {
+    throw new WorldError(`action mismatch: proof for ${fields.action}, expected ${expected.action}`);
+  }
+  let signalOk = false;
+  if (expected.signal) {
+    const got = pick(result, ["responses", 0, "signal_hash"]);
+    signalOk = typeof got === "string" && BigInt(got) === BigInt(hashSignal(expected.signal));
+    if (!fields.action && !signalOk) throw new WorldError("proof is not bound to this request (signal mismatch)");
+  }
+  if (expected.action && !fields.action && !signalOk) throw new WorldError("proof is not bound to this request");
+  return { ...fields, action: fields.action ?? (signalOk ? expected.action : undefined), environment };
 }
 
 // ---------- real ----------
@@ -96,9 +131,12 @@ export class RealWorldVerifier implements WorldVerifier {
 
   async requestParams(opts: RequestOpts): Promise<WorldRequestParams> {
     // Action is hashed into the RP signature, so a signed request is only valid for that exact action.
+    // Proving an existing session carries no action (World rejects the signature with
+    // invalid_rp_signature if we include one); those requests are bound through the signal instead.
+    const provingSession = !!opts.sessionId && opts.sessionId !== "create";
     const signed = signRequest({
       signingKeyHex: this.cfg.signingKeyHex,
-      ...(opts.action ? { action: opts.action } : {}),
+      ...(opts.action && !provingSession ? { action: opts.action } : {}),
       ...(opts.ttlSeconds ? { ttl: opts.ttlSeconds } : {}),
     });
     return {
@@ -107,6 +145,7 @@ export class RealWorldVerifier implements WorldVerifier {
       environment: this.cfg.environment,
       session_id: opts.sessionId,
       action_description: opts.actionDescription,
+      ...(opts.signal ? { signal: opts.signal } : {}),
       rp_context: {
         rp_id: this.cfg.rpId,
         nonce: signed.nonce,
@@ -117,7 +156,7 @@ export class RealWorldVerifier implements WorldVerifier {
     };
   }
 
-  async verify(result: unknown, expected: { action?: string }): Promise<VerifiedProof> {
+  async verify(result: unknown, expected: Expected): Promise<VerifiedProof> {
     if (typeof result !== "object" || result === null) throw new WorldError("invalid proof payload");
     const env = (result as any).environment ?? this.cfg.environment;
     if (env !== this.cfg.environment) throw new WorldError(`environment mismatch: ${env}`);
@@ -134,11 +173,7 @@ export class RealWorldVerifier implements WorldVerifier {
     }
     if (body.environment && body.environment !== this.cfg.environment) throw new WorldError("verified in wrong environment");
 
-    const fields = extractProofFields(result);
-    if (expected.action && fields.action && fields.action !== expected.action) {
-      throw new WorldError(`action mismatch: proof for ${fields.action}, expected ${expected.action}`);
-    }
-    return { ...fields, action: fields.action ?? expected.action, environment: this.cfg.environment };
+    return checkBinding(result, expected, this.cfg.environment);
   }
 }
 
@@ -164,22 +199,23 @@ export class FakeWorldVerifier implements WorldVerifier {
     };
   }
 
-  async verify(result: unknown, expected: { action?: string }): Promise<VerifiedProof> {
+  async verify(result: unknown, expected: Expected): Promise<VerifiedProof> {
     if (!result || (result as any).fake !== true) throw new WorldError("fake verifier: not a fake proof");
-    const fields = extractProofFields(result);
-    if (expected.action && fields.action !== expected.action) {
-      throw new WorldError(`action mismatch: proof for ${fields.action}, expected ${expected.action}`);
-    }
-    return { ...fields, environment: "staging" };
+    return checkBinding(result, expected, "staging");
   }
 }
 
 /** Helper for tests / the fake-mode UI: builds what the simulator would return. */
-export function fakeProof(o: { action?: string; sessionId: string; nullifier?: string }) {
+export function fakeProof(o: { action?: string; signal?: string; sessionId: string; nullifier?: string }) {
   return {
     fake: true,
     action: o.action,
     session_id: o.sessionId,
-    responses: [{ nullifier: o.nullifier ?? BigInt("0x" + crypto.randomUUID().replace(/-/g, "")).toString() }],
+    responses: [
+      {
+        nullifier: o.nullifier ?? BigInt("0x" + crypto.randomUUID().replace(/-/g, "")).toString(),
+        ...(o.signal ? { signal_hash: hashSignal(o.signal) } : {}),
+      },
+    ],
   };
 }

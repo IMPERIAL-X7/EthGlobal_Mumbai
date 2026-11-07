@@ -38,6 +38,8 @@ export interface IntentRow {
   reserved_auto: string;
   payload_json: string | null;
   summary: string;
+  /** The agent's own words (untrusted). Dashboard only, never World App. */
+  agent_reason: string | null;
   created_at: number;
   expires_at: number;
 }
@@ -59,11 +61,15 @@ function payeeLabel(d: Deps, agentId: string, account: string) {
   return r?.label ?? undefined;
 }
 
+/**
+ * The summary is what World App shows the human at the moment of approval, so it is built ONLY
+ * from frozen facts. The resource is reduced to its host: the path is chosen by the agent and could
+ * carry text aimed at the human ("/approved-by-owner-safe-to-confirm"). Full URL stays in `intent`.
+ */
 export function summarizePayment(i: PaymentIntent, label?: string): string {
-  let host = i.resource;
+  let host = i.resource.slice(0, 60);
   try {
-    const u = new URL(i.resource);
-    host = u.host + u.pathname;
+    host = new URL(i.resource).host;
   } catch {}
   return `Pay ${describeAmount(i.amount, i.asset)} to ${label ? `${label} (${i.payTo})` : i.payTo} for ${host}`;
 }
@@ -193,7 +199,9 @@ export function proposePolicy(d: Deps, agent: AgentRow, newPolicy: Policy, by: "
   const intent: PolicyChangeIntent = { v: 1, kind: "policy_change", agentId: agent.id, nonce: randomBytes(12).toString("hex"), createdAt: t, expiresAt: t + cur.policy.approvalTtlSeconds, policyHash };
   const hash = hashIntent(intent);
   const action = worldActionFor(intent, hash);
-  const summary = `${by === "agent" ? "Agent requests" : "Change"} spending limits: ${diffPolicy(cur.policy, parsed)}${reason ? ` — "${reason.slice(0, 120)}"` : ""}`;
+  // Facts only: the agent's reason never goes into the summary (World App shows the summary).
+  const summary = `${by === "agent" ? "Agent requests" : "Change"} spending limits: ${diffPolicy(cur.policy, parsed)}`;
+  const agentReason = by === "agent" && reason ? reason.slice(0, 280) : null;
   const warnings = by === "agent" ? ["Requested by the agent itself, not by you"] : [];
 
   const id = newId("int");
@@ -203,17 +211,17 @@ export function proposePolicy(d: Deps, agent: AgentRow, newPolicy: Policy, by: "
     if (pending >= cur.policy.maxPendingApprovals) throw conflict("too many pending approvals", "too_many_pending");
     d.db
       .prepare(
-        `INSERT INTO intents (id, agent_id, kind, canonical_json, hash, decision, reasons, status, payload_json, summary, created_at, expires_at)
-         VALUES (?, ?, 'policy_change', ?, ?, 'NEEDS_APPROVAL', ?, 'awaiting_approval', ?, ?, ?, ?)`,
+        `INSERT INTO intents (id, agent_id, kind, canonical_json, hash, decision, reasons, status, payload_json, summary, agent_reason, created_at, expires_at)
+         VALUES (?, ?, 'policy_change', ?, ?, 'NEEDS_APPROVAL', ?, 'awaiting_approval', ?, ?, ?, ?, ?)`,
       )
-      .run(id, agent.id, JSON.stringify(intent), hash, JSON.stringify([`policy change by ${by}`]), JSON.stringify(parsed), summary, t, intent.expiresAt);
+      .run(id, agent.id, JSON.stringify(intent), hash, JSON.stringify([`policy change by ${by}`]), JSON.stringify(parsed), summary, agentReason, t, intent.expiresAt);
     d.db
       .prepare(`INSERT INTO approvals (id, intent_id, agent_id, world_action, status, warnings, expires_at, created_at) VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)`)
       .run(approvalId, id, agent.id, action, JSON.stringify(warnings), intent.expiresAt, t);
   })();
 
   d.bus.emit("intent.created", { agentId: agent.id, intentId: id, kind: "policy_change", decision: "NEEDS_APPROVAL", reasons: [`policy change by ${by}`], summary }, agent.owner_id);
-  d.bus.emit("approval.pending", { agentId: agent.id, approvalId, intentId: id, summary, intentHash: hash, worldAction: action, warnings, expiresAt: intent.expiresAt }, agent.owner_id);
+  d.bus.emit("approval.pending", { agentId: agent.id, approvalId, intentId: id, summary, agentReason, intentHash: hash, worldAction: action, warnings, expiresAt: intent.expiresAt }, agent.owner_id);
   void audit(d, agent.owner_id, { type: "POLICY_PROPOSED", agentId: agent.id, fields: { by, policy: policyHash, h: hash.slice(0, 32) }, payload: parsed });
   return { intentId: id, approvalId, intentHash: hash, expiresAt: intent.expiresAt, summary };
 }

@@ -58,7 +58,8 @@ CREATE TABLE IF NOT EXISTS intents (
   fee_payer TEXT,
   reserved_auto TEXT NOT NULL DEFAULT '0',       -- daily-budget reservation for AUTO_HOT
   payload_json TEXT,                             -- e.g. proposed policy
-  summary TEXT NOT NULL,
+  summary TEXT NOT NULL,                         -- built ONLY from frozen facts (shown in World App)
+  agent_reason TEXT,                             -- the agent's own words: untrusted, dashboard only
   created_at INTEGER NOT NULL,
   expires_at INTEGER NOT NULL
 );
@@ -133,6 +134,9 @@ export function openDb(url: string): DB {
   const file = url.startsWith("file:") ? url.slice(5) : url;
   const db = new Database(file);
   db.exec(SCHEMA);
+  // Columns added after first release (CREATE TABLE IF NOT EXISTS won't add them to old DBs).
+  const cols = (db.prepare(`PRAGMA table_info(intents)`).all() as { name: string }[]).map((c) => c.name);
+  if (!cols.includes("agent_reason")) db.exec(`ALTER TABLE intents ADD COLUMN agent_reason TEXT`);
   return db;
 }
 
