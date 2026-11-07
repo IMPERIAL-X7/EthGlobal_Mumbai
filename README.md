@@ -8,7 +8,7 @@ Built at ETHGlobal Mumbai, November 2026.
 
 | | |
 |---|---|
-| Live demo | `LIVE_DEMO_URL` |
+| Live demo | [leash-web-theta.vercel.app](https://leash-web-theta.vercel.app) |
 | Demo video | `VIDEO_URL` |
 | Settled payment (vault, owner approved) | [`0.0.7162784@1794010639.787403755`](https://hashscan.io/testnet/transaction/0.0.7162784@1794010639.787403755) |
 | Settled payment (automatic, no human) | [`0.0.7162784@1794010646.743833618`](https://hashscan.io/testnet/transaction/0.0.7162784@1794010646.743833618) |

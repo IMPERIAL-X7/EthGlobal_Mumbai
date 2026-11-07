@@ -80,6 +80,8 @@ export class LeashAgent {
       method,
       headers: { "content-type": "application/json", authorization: `Bearer ${this.cfg.apiKey}` },
       body: body === undefined ? undefined : JSON.stringify(body),
+      // Never hang forever on a dropped connection (the long-poll /wait answers within 25 s).
+      signal: AbortSignal.timeout(45_000),
     });
     const json: any = await res.json().catch(() => ({}));
     if (!res.ok) {
@@ -143,7 +145,8 @@ export class LeashAgent {
       h.set("X-Leash-Agent", name);
       init = { ...init, headers: h };
     }
-    const first = await this.f(url, init);
+    // Each call gets its own time limit (a shared one would expire while waiting for the owner).
+    const first = await this.f(url, { signal: AbortSignal.timeout(30_000), ...init });
     if (first.status !== 402) return first;
 
     const required = await readPaymentRequired(first);
@@ -179,7 +182,7 @@ export class LeashAgent {
     const payload: PaymentPayload = { x402Version: required.x402Version, resource: required.resource, accepted: req, payload: { transaction } };
     const headers = new Headers(init.headers);
     headers.set("PAYMENT-SIGNATURE", encodePaymentSignatureHeader(payload));
-    const paid = await this.f(url, { ...init, headers });
+    const paid = await this.f(url, { signal: AbortSignal.timeout(90_000), ...init, headers }); // includes on-chain settlement
 
     const settleHeader = paid.headers.get("PAYMENT-RESPONSE");
     if (!settleHeader) {

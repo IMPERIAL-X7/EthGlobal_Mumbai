@@ -16,16 +16,19 @@ setDefaultResultOrder("ipv4first");
 loadDotenv();
 
 const file = process.argv[2]!;
-const MERCHANT = process.argv[3] ?? "http://localhost:4210";
+// Default: the live deployment's demo shop if the keys came from the live site, else the local shop.
 const cfg = Object.fromEntries(
   readFileSync(file, "utf8")
     .split("\n")
     .filter((l) => /^[A-Z_]+=/.test(l))
     .map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1).trim()]),
 );
-// The web app writes its own origin (via the dev proxy); talk to the server directly.
-const apiUrl = process.env.LEASH_DIRECT_API ?? "http://localhost:4000/v1";
-console.log(`agent: hot ${cfg.AGENT_HOT_ACCOUNT_ID}, vault ${cfg.AGENT_VAULT_ACCOUNT_ID} → ${apiUrl}`);
+// The keys file holds the web app's /v1 (proxied to the server). Local dev: talk to :4000 directly.
+const fileApi = cfg.LEASH_API_URL ?? "";
+const local = /localhost|127\.0\.0\.1/.test(fileApi);
+const apiUrl = process.env.LEASH_DIRECT_API ?? (local ? "http://localhost:4000/v1" : fileApi);
+const MERCHANT = process.argv[3] ?? (local ? "http://localhost:4210" : fileApi.replace(/\/v1$/, "/shop"));
+console.log(`agent: hot ${cfg.AGENT_HOT_ACCOUNT_ID}, vault ${cfg.AGENT_VAULT_ACCOUNT_ID} → ${apiUrl}, shop ${MERCHANT}`);
 
 const op = Client.forTestnet().setOperator(AccountId.fromString(process.env.HEDERA_OPERATOR_ID!), PrivateKey.fromStringDer(process.env.HEDERA_OPERATOR_KEY!));
 const rx = await (await new TransferTransaction().addHbarTransfer(process.env.HEDERA_OPERATOR_ID!, new Hbar(-1)).addHbarTransfer(cfg.AGENT_VAULT_ACCOUNT_ID!, new Hbar(1)).execute(op)).getReceipt(op);
@@ -48,7 +51,12 @@ async function pay(label: string, path: string) {
     const r = await agent.fetch(`${MERCHANT}${path}`, {}, {
       onDecision: (d) => d.decision === "pending" && console.log("  >>> WAITING FOR YOU: open the web app and approve with World ID (10 min)"),
     });
-    const tx = JSON.parse(Buffer.from(r.headers.get("PAYMENT-RESPONSE")!, "base64").toString()).transaction;
+    const pr = r.headers.get("PAYMENT-RESPONSE");
+    if (!pr) {
+      const body: any = await r.json().catch(() => ({}));
+      return console.log(`  REFUSED by the shop, HTTP ${r.status}: ${body.message ?? body.error ?? ""}`);
+    }
+    const tx = JSON.parse(Buffer.from(pr, "base64").toString()).transaction;
     console.log(`  paid, HTTP ${r.status}: https://hashscan.io/testnet/transaction/${tx}`);
   } catch (e) {
     console.log(`  not paid: ${e instanceof LeashDenied ? `${e.message}` : (e as Error).message}`);
