@@ -99,104 +99,125 @@ export function Approval() {
   const pending = ap.status === "pending" && left > 0;
   const codeLeft = step.s === "code" ? Math.max(0, step.expiresAt - now) : 0;
 
+  const agentShort = ap.agent.ens.split(".")[0];
+  const approved = ap.status === "approved";
+  const denied = ap.status === "denied";
+  const expired = !pending && !approved && !denied;
+  const tone = approved ? "good" : denied || expired ? "muted" : "warn";
+
   return (
     <AppShell>
       <div className="approve">
         <Link to="/app" className="back">← Overview</Link>
-        <div className="approve-card">
-          <div className="approve-head">
-            <span>{ap.agent.ens} {ap.kind === "payment" ? "wants to pay" : "wants to change its limits"}</span>
-            {pending && <span className="approve-timer">Expires in {countdown(ap.expiresAt, now)}</span>}
-          </div>
+        <article className={`rcpt rcpt-${tone}`}>
+          <header className="rcpt-top">
+            <div className="rcpt-row1">
+              <span className="rcpt-who">{agentShort} {ap.kind === "payment" ? "wants to pay" : "wants higher limits"}</span>
+              {pending && <span className="pill pill-warn">{countdown(ap.expiresAt, now)} left</span>}
+              {approved && <span className="pill pill-good">{ap.kind === "payment" ? (settledTx ? "Paid" : "Approved") : "Limits changed"}</span>}
+              {denied && <span className="pill pill-muted">Denied</span>}
+              {expired && <span className="pill pill-muted">Expired</span>}
+            </div>
+            {ap.kind === "payment" ? (
+              <>
+                <p className="rcpt-amt">{fmt(i.amount, i.asset)} <span>{assetName(i.asset)}</span></p>
+                <p className="rcpt-to">to <strong>{hostOf(i.resource)}</strong>{i.description ? <> for “{i.description}”</> : null}</p>
+              </>
+            ) : (
+              <>
+                <p className="rcpt-amt rcpt-amt-sm">Raise its limits?</p>
+                <table className="diff">
+                  <tbody>
+                    {Object.keys(LIMIT_LABELS).map((k) => {
+                      const from = current?.[k];
+                      const to = ap.proposedPolicy?.[k];
+                      if (to === undefined || from === to) return null;
+                      return (
+                        <tr key={k}>
+                          <td>{LIMIT_LABELS[k]}</td>
+                          <td className="num">{from !== undefined ? fmt(from) : "…"}</td>
+                          <td aria-hidden="true">→</td>
+                          <td className="num strong">{fmt(to)} USDC</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </>
+            )}
+          </header>
 
-          {ap.kind === "payment" ? (
-            <div className="approve-what">
-              <p className="approve-amt">{fmt(i.amount, i.asset)} <span>{assetName(i.asset)}</span></p>
-              <p className="approve-to">to <strong className="mono">{i.payTo}</strong> for {hostOf(i.resource)}</p>
-            </div>
-          ) : (
-            <div className="approve-what">
-              <p className="approve-amt approve-amt-sm">Raise its limits?</p>
-              <table className="diff">
-                <tbody>
-                  {Object.keys(LIMIT_LABELS).map((k) => {
-                    const from = current?.[k];
-                    const to = ap.proposedPolicy?.[k];
-                    if (to === undefined || from === to) return null;
-                    return (
-                      <tr key={k}>
-                        <td>{LIMIT_LABELS[k]}</td>
-                        <td className="num">{from !== undefined ? fmt(from) : "…"}</td>
-                        <td aria-hidden="true">→</td>
-                        <td className="num strong">{fmt(to)} USDC</td>
-                      </tr>
-                    );
-                  })}
-                  {ap.proposedPolicy && current && ap.proposedPolicy.requireApprovalForNewPayee !== current.requireApprovalForNewPayee && (
-                    <tr><td>Ask before paying a new shop</td><td>{current.requireApprovalForNewPayee ? "yes" : "no"}</td><td aria-hidden="true">→</td><td className="strong">{ap.proposedPolicy.requireApprovalForNewPayee ? "yes" : "no"}</td></tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          )}
-
-          {ap.warnings.length > 0 && (
-            <div className="approve-chips">
-              {ap.warnings.map((w) => <span className="chip chip-warn" key={w}>◐ {w}</span>)}
-            </div>
-          )}
-
-          {ap.agentReason && (
-            <div className="agent-says approve-says">
-              <p className="lbl">THE AGENT SAYS · UNVERIFIED</p>
-              <p>“{ap.agentReason}”</p>
-            </div>
-          )}
-
-          <p className="approve-check">World App will show: <strong>“{ap.summary}”</strong>. Make sure it matches.</p>
-
-          {/* ---------- actions / states ---------- */}
-          {ap.status === "approved" && (
-            <div className="approve-done good">
-              <p>✓ Approved with World ID.</p>
-              {ap.kind === "payment" && (settledTx ? <a href={settledTx} target="_blank" rel="noreferrer">Paid. View the transaction on HashScan →</a> : <span className="muted">Waiting for the agent to finish the payment…</span>)}
-              {ap.kind === "policy_change" && <span className="muted">The new limits are active.</span>}
-            </div>
-          )}
-          {ap.status === "denied" && <div className="approve-done bad"><p>✕ Denied. Nothing moved, and the agent was told.</p></div>}
-          {ap.status !== "approved" && ap.status !== "denied" && !pending && <div className="approve-done"><p>This request expired. Nothing moved.</p></div>}
-
-          {pending && step.s === "idle" && (
-            <div className="btn-row approve-btns">
-              <button type="button" className="btn btn-primary" onClick={approve}>Approve with World ID</button>
-              <button type="button" className="btn btn-ghost" onClick={deny}>Deny</button>
-            </div>
-          )}
-          {pending && step.s === "verifying" && <p className="approve-wait">Working…</p>}
-          {pending && step.s === "error" && (
-            <div className="approve-err">
-              <p role="alert">{step.message}</p>
-              <div className="btn-row"><button type="button" className="btn btn-primary" onClick={approve}>Get a new code</button><button type="button" className="btn btn-ghost" onClick={deny}>Deny</button></div>
-            </div>
-          )}
-          {pending && step.s === "code" && (
-            <div className="approve-qr">
-              <div className={`qr-box ${codeLeft === 0 ? "qr-expired" : ""}`}>
-                <img src={step.qr} alt="World ID approval code. Scan it with World App." width={220} height={220} />
-                {codeLeft === 0 && <span className="qr-overlay">Code expired</span>}
-              </div>
-              <div className="approve-qr-side">
-                <p className="strong" style={{ margin: 0 }}>Scan with World App to approve</p>
-                <p className="muted mono" style={{ margin: "6px 0 0", fontSize: 12 }}>{codeLeft ? `code expires in ${countdown(step.expiresAt, now)}` : "code expired"}</p>
-                <div className="btn-row" style={{ flexWrap: "wrap" }}>
-                  <button type="button" className="btn btn-primary" disabled={!codeLeft} onClick={async () => { await navigator.clipboard.writeText(step.url).catch(() => {}); setCopied(true); }}>{copied ? "Copied" : "Copy link for the simulator"}</button>
-                  <button type="button" className="btn btn-ghost" onClick={approve}>New code</button>
+          {!approved && (
+            <>
+              <dl className="rcpt-facts">
+                {ap.kind === "payment" && <><dt>Paid to</dt><dd className="num">{i.payTo}</dd></>}
+                {ap.kind === "payment" && <><dt>From</dt><dd>Vault · only with your OK</dd></>}
+                <dt>Why you're asked</dt>
+                <dd className="rcpt-why">{ap.warnings.length ? ap.warnings.join(" · ") : "Outside your limits"}</dd>
+              </dl>
+              {ap.agentReason && (
+                <div className="rcpt-says">
+                  <p className="lbl">Your agent says (not verified)</p>
+                  <p>“{ap.agentReason}”</p>
                 </div>
-                <button type="button" className="linklike" style={{ marginTop: 12 }} onClick={deny}>Deny instead</button>
-              </div>
-            </div>
+              )}
+            </>
           )}
-        </div>
+
+          {approved && (
+            <ol className="rcpt-steps">
+              <li><span className="tick tick-wait" aria-hidden="true">◐</span><span><strong>Paused for you</strong><small>{ap.warnings[0] ?? "outside your limits"}</small></span></li>
+              <li><span className="tick tick-ok" aria-hidden="true">✓</span><span><strong>You approved with World ID</strong><small>on your phone, for this exact {ap.kind === "payment" ? "payment" : "change"}</small></span></li>
+              {ap.kind === "payment" ? (
+                <li>
+                  <span className={`tick ${settledTx ? "tick-ok" : "tick-wait"}`} aria-hidden="true">{settledTx ? "✓" : "…"}</span>
+                  <span>
+                    <strong>{settledTx ? "Paid from your vault" : "Paying from your vault…"}</strong>
+                    <small>{settledTx ? <>settled on Hedera · <a href={settledTx} target="_blank" rel="noreferrer">view on HashScan</a></> : "waiting for the agent to finish"}</small>
+                  </span>
+                </li>
+              ) : (
+                <li><span className="tick tick-ok" aria-hidden="true">✓</span><span><strong>New limits are active</strong><small>published to ENS and the audit log</small></span></li>
+              )}
+            </ol>
+          )}
+
+          <footer className="rcpt-actions">
+            {denied && <p className="rcpt-note">You said no. Nothing moved, and the agent was told.</p>}
+            {expired && <p className="rcpt-note">This request expired. Nothing moved.</p>}
+
+            {pending && step.s === "idle" && (
+              <>
+                <button type="button" className="btn btn-primary rcpt-approve" onClick={approve}>Approve with World ID</button>
+                <button type="button" className="btn rcpt-deny" onClick={deny}>Deny</button>
+                <p className="rcpt-hint">World App will show the same amount and shop. Check it matches.</p>
+              </>
+            )}
+            {pending && step.s === "verifying" && <p className="rcpt-note">Working…</p>}
+            {pending && step.s === "error" && (
+              <>
+                <p className="rcpt-err" role="alert">{step.message}</p>
+                <button type="button" className="btn btn-primary rcpt-approve" onClick={approve}>Get a new code</button>
+                <button type="button" className="btn rcpt-deny" onClick={deny}>Deny</button>
+              </>
+            )}
+            {pending && step.s === "code" && (
+              <div className="rcpt-qr">
+                <div className={`qr-box ${codeLeft === 0 ? "qr-expired" : ""}`}>
+                  <img src={step.qr} alt="World ID approval code. Scan it with World App." width={220} height={220} />
+                  {codeLeft === 0 && <span className="qr-overlay">Code expired</span>}
+                </div>
+                <p className="rcpt-qr-t">Scan with World App to approve</p>
+                <p className="rcpt-qr-m">{codeLeft ? `code expires in ${countdown(step.expiresAt, now)}` : "code expired"}</p>
+                <button type="button" className="btn btn-primary rcpt-approve" disabled={!codeLeft} onClick={async () => { await navigator.clipboard.writeText(step.url).catch(() => {}); setCopied(true); }}>{copied ? "Copied. Paste it in the simulator" : "Copy link for the simulator"}</button>
+                <div className="rcpt-qr-row">
+                  <button type="button" className="linklike" onClick={approve}>New code</button>
+                  <button type="button" className="linklike" onClick={deny}>Deny instead</button>
+                </div>
+              </div>
+            )}
+          </footer>
+        </article>
       </div>
     </AppShell>
   );

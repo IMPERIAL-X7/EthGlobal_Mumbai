@@ -81,6 +81,14 @@ export function buildMerchant(o: MerchantOptions) {
   const option = (amount: string, payTo = MERCHANT) => ({ scheme: "exact", network: NETWORK, payTo, price: usdc(amount), maxTimeoutSeconds: 120 });
 
   const app = express();
+  // Behind Vercel / Railway proxies: build resource URLs from the public host (X-Forwarded-Host), not the internal one.
+  app.set("trust proxy", true);
+  // x402 builds the resource URL from the raw Host header, so put the public host there.
+  app.use((req, _res, next) => {
+    const pub = process.env.MERCHANT_PUBLIC_HOST || req.header("x-forwarded-host");
+    if (pub) req.headers.host = pub.split(",")[0]!.trim();
+    next();
+  });
   app.get("/", (_req, res) => res.json({ service: "Weather Pro (demo x402 merchant)", network: NETWORK, payTo: MERCHANT, fake: FAKE }));
 
   // ---- seller-side ENS check (runs before the x402 middleware) -------------------------------
