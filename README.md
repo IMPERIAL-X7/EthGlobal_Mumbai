@@ -97,6 +97,7 @@ Our live runs settled in HBAR. The code also supports USDC (token `0.0.429274`);
 - Each agent is `<name>.leash.eth`. Its records live on the parent's resolver and resolve through the Universal Resolver by wildcard (ENSIP-10). No per-agent registration, one transaction per agent.
 - Records: `leash.status`, `leash.policy` (hash of the active limits), `leash.hedera.hot`, `leash.hedera.vault`, `leash.audit`, `leash.expires`.
 - Only Leash can write them, so an agent cannot edit its own identity. Revoking an agent sets `leash.status` to `revoked` and clears its wallets within seconds.
+- **Sellers check it.** The SDK sends the agent's name in an `X-Leash-Agent` header. The demo merchant resolves that name on ENS itself, not through Leash. It refuses agents that are not `active`, and refuses a payment if the paying wallet is not one of the wallets published on ENS. Revoke an agent and shops stop serving it, with no call to Leash. Code: the check at the top of [`apps/merchant/src/app.ts`](apps/merchant/src/app.ts).
 - Code: [`packages/ens`](packages/ens), setup: [`scripts/setup-ens.ts`](scripts/setup-ens.ts), live test: [`scripts/ens-live-test.mts`](scripts/ens-live-test.mts).
 
 ### World: Best Use of IDKit

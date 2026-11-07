@@ -35,7 +35,7 @@ export function Landing() {
               </p>
               <div className="cta-row">
                 <Link to="/login" className="btn btn-primary">Put your agent on a leash</Link>
-                <Link to="/demo" className="btn btn-ghost">Watch it stop an attack</Link>
+                <a href="#problem" className="btn btn-ghost">See the problem</a>
               </div>
             </div>
             <div className="hero-visual">
@@ -244,7 +244,7 @@ vault transfer signed by agent + Leash (2-of-3){"\n"}
             </div>
             <div className="cta-row" style={{ marginTop: 0 }}>
               <Link to="/login" className="btn btn-primary">Sign in with World ID</Link>
-              <Link to="/demo" className="btn btn-ghost">See the live demo</Link>
+              <a href="#proof" className="btn btn-ghost">See it running live</a>
             </div>
           </div>
         </section>

@@ -14,6 +14,20 @@ import { paymentMiddleware } from "@x402/express";
 import { HTTPFacilitatorClient, x402ResourceServer, type FacilitatorClient } from "@x402/core/server";
 import type { PaymentPayload, PaymentRequirements, SettleResponse, SupportedResponse, VerifyResponse } from "@x402/core/types";
 import { ExactHederaScheme } from "@x402/hedera/exact/server";
+import { decodePaymentSignatureHeader } from "@x402/core/http";
+import { Transaction, TransferTransaction } from "@hiero-ledger/sdk";
+
+/** The Hedera account that pays in an x402 payment (the one with a negative transfer), if decodable. */
+function payerOf(header: string): string | undefined {
+  try {
+    const p = decodePaymentSignatureHeader(header) as any;
+    const tx = Transaction.fromBytes(Buffer.from(p.payload.transaction, "base64"));
+    if (!(tx instanceof TransferTransaction)) return undefined;
+    for (const [acct, amt] of tx.hbarTransfers) if (amt.toTinybars().isNegative()) return acct.toString();
+    for (const [, m] of tx.tokenTransfers) for (const [acct, amt] of m) if (amt.isNegative()) return acct.toString();
+  } catch {}
+  return undefined;
+}
 
 export interface MerchantOptions {
   fake: boolean;
@@ -22,6 +36,14 @@ export interface MerchantOptions {
   payTo?: string;
   attacker?: string;
   usdc?: string;
+  /**
+   * Seller-side identity check: given the agent's ENS name (X-Leash-Agent header), return its public
+   * records as read from ENS. The merchant refuses agents that are not active, and refuses payments
+   * from a wallet that is not one of the agent's published wallets.
+   */
+  lookupAgent?: (ensName: string) => Promise<{ exists: boolean; status?: string; hot?: string; vault?: string }>;
+  /** Refuse requests that don't say which agent they come from. */
+  requireAgent?: boolean;
 }
 
 export function buildMerchant(o: MerchantOptions) {
@@ -60,6 +82,37 @@ export function buildMerchant(o: MerchantOptions) {
 
   const app = express();
   app.get("/", (_req, res) => res.json({ service: "Weather Pro (demo x402 merchant)", network: NETWORK, payTo: MERCHANT, fake: FAKE }));
+
+  // ---- seller-side ENS check (runs before the x402 middleware) -------------------------------
+  const cache = new Map<string, { at: number; rec: Awaited<ReturnType<NonNullable<MerchantOptions["lookupAgent"]>>> }>();
+  app.use(async (req, res, next) => {
+    if (req.path === "/" || !o.lookupAgent) return next();
+    const name = req.header("x-leash-agent");
+    if (!name) return o.requireAgent ? void res.status(403).json({ error: "agent_required", message: "Send X-Leash-Agent with your ENS name" }) : next();
+    try {
+      let hit = cache.get(name);
+      if (!hit || Date.now() - hit.at > 8000) {
+        hit = { at: Date.now(), rec: await o.lookupAgent(name) };
+        cache.set(name, hit);
+      }
+      const rec = hit.rec;
+      if (!rec.exists || rec.status !== "active") {
+        return void res.status(403).json({ error: "agent_not_active", message: `${name} is ${rec.status ?? "not registered"} on ENS`, ens: name });
+      }
+      // On the paid retry, the payer must be one of the wallets the agent publishes on ENS.
+      const sig = req.header("payment-signature");
+      if (sig) {
+        const payer = payerOf(sig);
+        if (payer && payer !== rec.hot && payer !== rec.vault) {
+          return void res.status(403).json({ error: "payer_mismatch", message: `payment from ${payer}, but ${name} lists ${rec.hot} / ${rec.vault}` });
+        }
+      }
+      res.setHeader("X-Leash-Agent-Verified", `${name}; status=active; source=ens`);
+      next();
+    } catch (e) {
+      res.status(503).json({ error: "ens_unavailable", message: `could not check ${name} on ENS: ${(e as Error).message}` });
+    }
+  });
 
   app.use(
     paymentMiddleware(

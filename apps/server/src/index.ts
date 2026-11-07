@@ -9,6 +9,12 @@ loadDotenv();
 const cfg = loadConfig();
 const deps = buildDeps(cfg);
 const app = buildApp(deps);
+// Single-service deploys (Railway): also serve the demo x402 merchant at /shop.
+if (process.env.MOUNT_MERCHANT === "1") {
+  const { merchantFromEnv } = await import("../../merchant/src/fromEnv.ts");
+  app.use("/shop", merchantFromEnv(process.env));
+  console.log("  demo merchant mounted at /shop");
+}
 const server = createServer(app);
 attachSockets(server, deps);
 startJobs(deps);

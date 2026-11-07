@@ -67,6 +67,13 @@ export class LeashAgent {
     this.log = cfg.log ?? (() => {});
   }
 
+  /** The agent's public ENS name (e.g. shopper.leash.eth), sent to sellers so they can check it on ENS. */
+  private ensName?: Promise<string | undefined>;
+  agentName(): Promise<string | undefined> {
+    this.ensName ??= this.api<{ ens_name?: string }>("GET", "/agent/me").then((a) => a.ens_name).catch(() => undefined);
+    return this.ensName;
+  }
+
   // ---------------------------------------------------------------- Leash API
   async api<T = any>(method: string, path: string, body?: unknown): Promise<T> {
     const res = await this.f(this.cfg.apiUrl + path, {
@@ -129,6 +136,13 @@ export class LeashAgent {
   // ---------------------------------------------------------------- the main entry point
   async fetch(input: string | URL, init: RequestInit = {}, ev: PayEvents = {}): Promise<Response> {
     const url = String(input);
+    // Tell the seller who we are; it can verify the name on ENS (status, wallets) before serving us.
+    const name = await this.agentName();
+    if (name) {
+      const h = new Headers(init.headers);
+      h.set("X-Leash-Agent", name);
+      init = { ...init, headers: h };
+    }
     const first = await this.f(url, init);
     if (first.status !== 402) return first;
 
